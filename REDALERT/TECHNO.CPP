@@ -7521,6 +7521,29 @@ static inline int _Scale_To_256(int val)
  * HISTORY:                                                                                    *
  *   07/19/1996 JLB : Created.                                                                 *
  *=============================================================================================*/
+/*
+**	Validate that a type pointer is a live, active member of its heap rather than just non-NULL.
+**	During rules load, weapon/warhead lookups can yield a non-NULL but invalid (out-of-range /
+**	dangling) pointer; a bare "!= NULL" guard then still faults on dereference. These helpers
+**	round-trip the pointer through its heap (ID -> bounds -> Ptr back-compare) WITHOUT ever
+**	dereferencing it, so they are safe on a wild pointer.
+**	Fixes the intermittent EXCEPTION_ACCESS_VIOLATION in TechnoTypeClass::Read_INI
+**	(PrimaryWeapon->WarheadPtr->IsWallDestroyer) seen at game start.
+*/
+static bool Is_Active_Heap_Weapon(WeaponTypeClass const * ptr)
+{
+	if (ptr == NULL) return(false);
+	int id = Weapons.ID(ptr);
+	return(id >= 0 && id < Weapons.Count() && Weapons.Ptr(id) == ptr);
+}
+
+static bool Is_Active_Heap_Warhead(WarheadTypeClass const * ptr)
+{
+	if (ptr == NULL) return(false);
+	int id = Warheads.ID(ptr);
+	return(id >= 0 && id < Warheads.Count() && Warheads.Ptr(id) == ptr);
+}
+
 bool TechnoTypeClass::Read_INI(CCINIClass & ini)
 {
 	if (ini.Is_Present(Name())) {
@@ -7585,14 +7608,14 @@ bool TechnoTypeClass::Read_INI(CCINIClass & ini)
 //Mono_Printf("after image=: %s\n",GraphicName);if(Random_Pick(0,4)) Keyboard->Get();
 
 		IsLeader = false;
-		if (PrimaryWeapon != NULL && PrimaryWeapon->Attack > 0) {
+		if (Is_Active_Heap_Weapon(PrimaryWeapon) && PrimaryWeapon->Attack > 0) {
 			IsLeader = true;
 		}
 
 		/*
 		**	Check to see what zone this object should recognize.
 		*/
-		if (PrimaryWeapon != NULL && PrimaryWeapon->WarheadPtr != NULL && PrimaryWeapon->WarheadPtr->IsWallDestroyer) {
+		if (Is_Active_Heap_Weapon(PrimaryWeapon) && Is_Active_Heap_Warhead(PrimaryWeapon->WarheadPtr) && PrimaryWeapon->WarheadPtr->IsWallDestroyer) {
 			MZone = MZONE_DESTROYER;
 		}
 		if (Speed == SPEED_FLOAT) {

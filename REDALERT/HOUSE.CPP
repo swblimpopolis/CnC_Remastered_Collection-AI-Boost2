@@ -9916,7 +9916,7 @@ void HouseClass::AI_CalcDynamics(void)
 
 		//Dynamic stuff
 		if (Rule.AIAllowDynamicBaseGrow) {
-			if (enemy != NULL) {
+			if (enemy != NULL && CountEnemiesForThisAI > 0) {
 				// Note we do always '1 +' to be sure the value is never a 0
 				//Refineries
 				TempCalculation = (int)((enemy->BQuantity[STRUCT_REFINERY] * CountEnemiesForThisAI) / CountEnemiesForThisAI);
