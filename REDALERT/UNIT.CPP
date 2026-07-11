@@ -1778,7 +1778,7 @@ bool UnitClass::Goto_Clear_Spot(void)
 	*/
 	if(!Target_Legal(NavCom) && !House->IsHuman) {
 		Scatter(0);
-		Goto_Clear_Spot();
+		// Goto_Clear_Spot();  // REMOVED: recurses from the same position (Scatter is async, unit has not moved yet) -> unbounded recursion -> EXCEPTION_STACK_OVERFLOW when an AI unit is fully boxed in. The next AI update retries after the scatter has actually moved the unit.
 	}
 
 	return(false);
