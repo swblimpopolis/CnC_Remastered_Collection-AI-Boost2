@@ -1707,7 +1707,7 @@ bool UnitClass::Goto_Clear_Spot(void)
 		int k = 0;
 		int Loopy = 0;
 		int MCVScanRange = 50;
-		static int _offsets[] = { 0 };
+		static int _offsets[8 * 50 + 8] = { 0 };	// was size [1]: the fill loop below writes ~394 entries (2 for Loopy==0 + 8 per remaining iteration up to MCVScanRange=50); sized to hold them + a 0 terminator. Prevents a static-buffer overflow on every AI deploy scan.
 		while (Loopy < MCVScanRange) {
 			if (Loopy == 0) {
 				_offsets[k] = (MAP_CELL_W);
