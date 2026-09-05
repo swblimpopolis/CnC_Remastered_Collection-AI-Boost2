@@ -1615,6 +1615,11 @@ CELL FootClass::Safety_Point(CELL src, CELL dst, int start, int max)
 
 int FootClass::Passable_Cell(CELL cell, FacingType face, int threat, MoveType threshhold) const
 {
+	// Guard an out-of-range cell (e.g. an edge-of-map A* neighbor). Without this, Can_Enter_Cell -> Map[cell]
+	// dereferences a wild CellClass, causing EXCEPTION_ACCESS_VIOLATION in CellClass::Cell_Object during
+	// harvester pathfinding. An out-of-range cell is simply not passable.
+	if ((unsigned)cell >= (unsigned)MAP_CELL_TOTAL) return(0);
+
 	MoveType move = Can_Enter_Cell(cell, face);
 
 	if (move < MOVE_MOVING_BLOCK && Distance(Cell_Coord(cell)) > 0x0100) threshhold = MOVE_MOVING_BLOCK;
