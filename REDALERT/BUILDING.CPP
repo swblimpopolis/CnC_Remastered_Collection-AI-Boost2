@@ -4032,6 +4032,11 @@ MoveType BuildingClass::Can_Enter_Cell(CELL cell, FacingType) const
 	assert(Buildings.ID(this) == ID);
 	assert(IsActive);
 
+	// Match the other Can_Enter_Cell overrides (Unit/Infantry/Vessel/Aircraft): reject an
+	// out-of-range cell before dereferencing Map[cell], else a wild CellClass access-violates
+	// in Is_Clear_To_Build->Cell_Object (same fault class as issue #9).
+	if ((unsigned)cell >= MAP_CELL_TOTAL) return(MOVE_NO);
+
 	if (Can_Have_Rally_Point() && IsDown && IsLocked) {
         // Chthon CFE Note: repair bays don't build anything, so we need to set speed directly
         // (calling Fetch_Techno_Type(Class->ToBuild, 0)->Speed will result in a crash)
