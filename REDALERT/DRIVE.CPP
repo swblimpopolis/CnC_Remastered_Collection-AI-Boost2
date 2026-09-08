@@ -1677,19 +1677,36 @@ void DriveClass::Mark_Track(COORDINATE headto, MarkType type)
 		if (!IsOnShortTrack && TrackNumber != -1) {
 
 			/*
-			** If we have not passed the per cell process point we need
-			** to deal with it.
+			**	Validate the track table subscripts before using them. A corrupt TrackNumber --
+			**	or the track number it yields -- would index TrackControl[]/RawTracks[] out of
+			**	bounds and hand back a garbage track pointer and cell index. That either faults
+			**	on ptr[cellidx] below, or (when it happens not to fault) flips the vehicle-occupy
+			**	flag on an unrelated cell via Map[offset], leaving a phantom blocked cell behind.
+			**	The origin of the bad index is not yet known, so log it rather than fail silently.
 			*/
-			int tracknum = TrackControl[TrackNumber].Track;
-			if (tracknum) {
-				TrackType const * ptr = RawTracks[tracknum - 1].Track;
-				int cellidx = RawTracks[tracknum - 1].Cell;
-				if (cellidx > -1) {
-					DirType dir = ptr[cellidx].Facing;
+			if ((unsigned)TrackNumber >= (unsigned)ARRAY_SIZE(TrackControl)) {
+				GlyphX_Debug_Print("DriveClass::Mark_Track -- TrackNumber out of range; skipping track unmark");
+			} else {
 
-					if (TrackIndex < cellidx && cellidx != -1) {
-						COORDINATE offset = Smooth_Turn(ptr[cellidx].Offset, dir);
-						Map[offset].Flag.Occupy.Vehicle = value;
+				/*
+				** If we have not passed the per cell process point we need
+				** to deal with it.
+				*/
+				int tracknum = TrackControl[TrackNumber].Track;
+				if (tracknum) {
+					if ((unsigned)(tracknum - 1) >= (unsigned)ARRAY_SIZE(RawTracks)) {
+						GlyphX_Debug_Print("DriveClass::Mark_Track -- track number out of range; skipping track unmark");
+					} else {
+						TrackType const * ptr = RawTracks[tracknum - 1].Track;
+						int cellidx = RawTracks[tracknum - 1].Cell;
+						if (cellidx > -1) {
+							DirType dir = ptr[cellidx].Facing;
+
+							if (TrackIndex < cellidx && cellidx != -1) {
+								COORDINATE offset = Smooth_Turn(ptr[cellidx].Offset, dir);
+								Map[offset].Flag.Occupy.Vehicle = value;
+							}
+						}
 					}
 				}
 			}
