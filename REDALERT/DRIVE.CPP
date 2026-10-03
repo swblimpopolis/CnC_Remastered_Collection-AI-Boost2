@@ -660,6 +660,17 @@ bool DriveClass::While_Moving(void)
 		SpeedAccum = 0;		// Kludge?  No speed should accumulate if movement is on hold.
 		return(false);
 	}
+	/*
+	**	Defense in depth: TrackNumber indexes TrackControl[] below. If it is ever out of
+	**	range the lookup reads off the end of the table -- the While_Moving access violation
+	**	in issue #11. Treat it as "not moving", clear it, and log so it stays visible.
+	*/
+	if ((unsigned)TrackNumber >= (unsigned)ARRAY_SIZE(TrackControl)) {
+		GlyphX_Debug_Print("DriveClass::While_Moving -- TrackNumber out of range; aborting move step");
+		TrackNumber = -1;
+		SpeedAccum = 0;
+		return(false);
+	}
 
 	/*
 	**	If enough movement has accumulated so that the unit can
@@ -1194,6 +1205,21 @@ bool DriveClass::Start_Of_Move(void)
 
 			IsOnShortTrack = false;
 			TrackNumber = facing * FACING_COUNT + (int)nextface;
+
+			/*
+			**	facing and nextface are assumed to be 0..FACING_COUNT-1 here, so that TrackNumber
+			**	lands inside TrackControl[]. A corrupt Path[] entry breaks that assumption: the
+			**	subscript below would read off the end of the table, and the out-of-range value
+			**	would then be stored on the unit, where it later faults in While_Moving() or
+			**	Mark_Track(). Reject it exactly like the "no such track" case the table encodes.
+			*/
+			if ((unsigned)TrackNumber >= (unsigned)ARRAY_SIZE(TrackControl)) {
+				GlyphX_Debug_Print("DriveClass::Start_Of_Move -- computed TrackNumber out of range; rejecting path");
+				Path[0] = FACING_NONE;
+				TrackNumber = -1;
+				return(true);
+			}
+
 			if (TrackControl[TrackNumber].Track == 0) {
 				Path[0] = FACING_NONE;
 				TrackNumber = -1;
@@ -1677,19 +1703,36 @@ void DriveClass::Mark_Track(COORDINATE headto, MarkType type)
 		if (!IsOnShortTrack && TrackNumber != -1) {
 
 			/*
-			** If we have not passed the per cell process point we need
-			** to deal with it.
+			**	Validate the track table subscripts before using them. A corrupt TrackNumber --
+			**	or the track number it yields -- would index TrackControl[]/RawTracks[] out of
+			**	bounds and hand back a garbage track pointer and cell index. That either faults
+			**	on ptr[cellidx] below, or (when it happens not to fault) flips the vehicle-occupy
+			**	flag on an unrelated cell via Map[offset], leaving a phantom blocked cell behind.
+			**	The origin of the bad index is not yet known, so log it rather than fail silently.
 			*/
-			int tracknum = TrackControl[TrackNumber].Track;
-			if (tracknum) {
-				TrackType const * ptr = RawTracks[tracknum - 1].Track;
-				int cellidx = RawTracks[tracknum - 1].Cell;
-				if (cellidx > -1) {
-					DirType dir = ptr[cellidx].Facing;
+			if ((unsigned)TrackNumber >= (unsigned)ARRAY_SIZE(TrackControl)) {
+				GlyphX_Debug_Print("DriveClass::Mark_Track -- TrackNumber out of range; skipping track unmark");
+			} else {
 
-					if (TrackIndex < cellidx && cellidx != -1) {
-						COORDINATE offset = Smooth_Turn(ptr[cellidx].Offset, dir);
-						Map[offset].Flag.Occupy.Vehicle = value;
+				/*
+				** If we have not passed the per cell process point we need
+				** to deal with it.
+				*/
+				int tracknum = TrackControl[TrackNumber].Track;
+				if (tracknum) {
+					if ((unsigned)(tracknum - 1) >= (unsigned)ARRAY_SIZE(RawTracks)) {
+						GlyphX_Debug_Print("DriveClass::Mark_Track -- track number out of range; skipping track unmark");
+					} else {
+						TrackType const * ptr = RawTracks[tracknum - 1].Track;
+						int cellidx = RawTracks[tracknum - 1].Cell;
+						if (cellidx > -1) {
+							DirType dir = ptr[cellidx].Facing;
+
+							if (TrackIndex < cellidx && cellidx != -1) {
+								COORDINATE offset = Smooth_Turn(ptr[cellidx].Offset, dir);
+								Map[offset].Flag.Occupy.Vehicle = value;
+							}
+						}
 					}
 				}
 			}
