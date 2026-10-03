@@ -660,6 +660,17 @@ bool DriveClass::While_Moving(void)
 		SpeedAccum = 0;		// Kludge?  No speed should accumulate if movement is on hold.
 		return(false);
 	}
+	/*
+	**	Defense in depth: TrackNumber indexes TrackControl[] below. If it is ever out of
+	**	range the lookup reads off the end of the table -- the While_Moving access violation
+	**	in issue #11. Treat it as "not moving", clear it, and log so it stays visible.
+	*/
+	if ((unsigned)TrackNumber >= (unsigned)ARRAY_SIZE(TrackControl)) {
+		GlyphX_Debug_Print("DriveClass::While_Moving -- TrackNumber out of range; aborting move step");
+		TrackNumber = -1;
+		SpeedAccum = 0;
+		return(false);
+	}
 
 	/*
 	**	If enough movement has accumulated so that the unit can
@@ -1194,6 +1205,21 @@ bool DriveClass::Start_Of_Move(void)
 
 			IsOnShortTrack = false;
 			TrackNumber = facing * FACING_COUNT + (int)nextface;
+
+			/*
+			**	facing and nextface are assumed to be 0..FACING_COUNT-1 here, so that TrackNumber
+			**	lands inside TrackControl[]. A corrupt Path[] entry breaks that assumption: the
+			**	subscript below would read off the end of the table, and the out-of-range value
+			**	would then be stored on the unit, where it later faults in While_Moving() or
+			**	Mark_Track(). Reject it exactly like the "no such track" case the table encodes.
+			*/
+			if ((unsigned)TrackNumber >= (unsigned)ARRAY_SIZE(TrackControl)) {
+				GlyphX_Debug_Print("DriveClass::Start_Of_Move -- computed TrackNumber out of range; rejecting path");
+				Path[0] = FACING_NONE;
+				TrackNumber = -1;
+				return(true);
+			}
+
 			if (TrackControl[TrackNumber].Track == 0) {
 				Path[0] = FACING_NONE;
 				TrackNumber = -1;
