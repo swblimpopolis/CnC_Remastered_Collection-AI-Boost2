@@ -239,6 +239,7 @@ class RulesClass {
 		int	HarvesterQueueJumpingEnabled = 1;
 		int	HarvesterLoadBalancing = 0;
 		int	HarvesterOptimizeEnabled = 1;
+		int	HarvesterSmartOreScan = 0;
 		int	AttackMoveCommandAllowed = 1;
 		int	ChronoTankAttackMoveCommandAllowed = 1;
 		int	QmoveLoopsAllowed = 1;
