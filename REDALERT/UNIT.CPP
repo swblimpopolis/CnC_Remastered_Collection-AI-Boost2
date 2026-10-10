@@ -2505,6 +2505,103 @@ void UnitClass::Draw_It(int x, int y, WindowNumberType window) const
 }
 
 
+/*
+**	Harvester ore search helpers (AI-Boost issue #15).
+*/
+static int const MAX_CLAIMED_ORE_CELLS = 64;
+
+/*
+**	Smart ore scan: how strongly distance discounts a patch. A patch found at ring radius R is
+**	scored patch * W / (R + W). With W = 4 a patch keeps 80% of its value at radius 1, 50% at
+**	radius 4 and 25% at radius 12.
+*/
+static int const SMART_ORE_DISTANCE_WEIGHT = 4;
+
+
+/*
+**	Value of the ore lying in a cell: (OverlayData+1) times the per-level value, with gems
+**	weighted x4 -- the same units Tiberium_Check has always returned. Zero if it is not ore.
+*/
+static int Ore_Cell_Value(CellClass const & cell)
+{
+	if (cell.Land_Type() != LAND_TIBERIUM) return(0);
+
+	int value = 0;
+	switch (cell.Overlay) {
+		case OVERLAY_GOLD1:
+		case OVERLAY_GOLD2:
+		case OVERLAY_GOLD3:
+		case OVERLAY_GOLD4:
+			value = Rule.GoldValue;
+			break;
+
+		case OVERLAY_GEMS1:
+		case OVERLAY_GEMS2:
+		case OVERLAY_GEMS3:
+		case OVERLAY_GEMS4:
+			value = Rule.GemValue*4;
+			break;
+
+		default:
+			break;
+	}
+	return((cell.OverlayData+1)*value);
+}
+
+
+/*
+**	Collects the cells other harvesters are currently driving to, so that a search can steer
+**	clear of them. The ore search only rejects cells something is standing on right now, so
+**	without this every harvester searching from the same spot -- usually the refinery it just
+**	unloaded at -- reaches the same answer, and they converge on the same few cells and block
+**	one another. Returns the number collected; anything past the list size is not avoided.
+*/
+static int Collect_Claimed_Ore_Cells(UnitClass const * self, CELL * list, int max)
+{
+	int count = 0;
+
+	for (int index = 0; index < Units.Count() && count < max; index++) {
+		UnitClass * unit = Units.Ptr(index);
+
+		if (unit == NULL || unit == self || !unit->IsActive || unit->IsInLimbo) continue;
+		if (!unit->Class->IsToHarvest) continue;
+		if (!Target_Legal(unit->NavCom) || !Is_Target_Cell(unit->NavCom)) continue;
+
+		list[count++] = ::As_Cell(unit->NavCom);
+	}
+	return(count);
+}
+
+
+static bool Is_Claimed_Ore_Cell(CELL cell, CELL const * list, int count)
+{
+	for (int index = 0; index < count; index++) {
+		if (list[index] == cell) return(true);
+	}
+	return(false);
+}
+
+
+/*
+**	Smart ore scan score for a candidate cell: the ore in the cell plus its eight neighbours,
+**	discounted by distance. Counting the neighbourhood is what separates a real patch from a
+**	lone freshly-seeded cell beside an ore mine, which would otherwise look exactly as good as
+**	the edge of a full field.
+*/
+static int Smart_Ore_Score(CELL cell, int value, int radius)
+{
+	int patch = value;
+
+	for (FacingType face = FACING_N; face < FACING_COUNT; face++) {
+		CellClass const * adjacent = Map[cell].Adjacent_Cell(face);
+		if (adjacent != NULL) {
+			patch += Ore_Cell_Value(*adjacent);
+		}
+	}
+	return((patch * SMART_ORE_DISTANCE_WEIGHT) / (radius + SMART_ORE_DISTANCE_WEIGHT));
+}
+
+
 /***********************************************************************************************
  * UnitClass::Tiberium_Check -- Search for and head toward nearest available Tiberium patch.   *
  *                                                                                             *
@@ -2542,23 +2639,21 @@ int UnitClass::Tiberium_Check(CELL & center, int x, int y)
 
 	if ((Session.Type != GAME_NORMAL || (!IsOwnedByPlayer || Map[center].Is_Mapped(PlayerPtr)))) {
 		if (Map[Coord].Zones[Class->MZone] != Map[center].Zones[Class->MZone]) return(0);
-		if (!Map[center].Cell_Techno() && Map[center].Land_Type() == LAND_TIBERIUM) {
-			int value = 0;
-			switch (Map[center].Overlay) {
-				case OVERLAY_GOLD1:
-				case OVERLAY_GOLD2:
-				case OVERLAY_GOLD3:
-				case OVERLAY_GOLD4:
-					value = Rule.GoldValue;
-					break;
-				case OVERLAY_GEMS1:
-				case OVERLAY_GEMS2:
-				case OVERLAY_GEMS3:
-				case OVERLAY_GEMS4:
-					value = Rule.GemValue*4;
-					break;
-			}
-			return((Map[center].OverlayData+1)*value);
+
+		/*
+		**	The cell must be one this harvester can actually drive onto (issue #15). Only an
+		**	occupying techno used to be rejected, so ore under a tree -- or under any terrain
+		**	object, which sets the Monolith occupancy bit -- scored as harvestable even though the
+		**	movement code refuses to enter it. The harvester would drive up and stall, and every
+		**	other harvester running this same search would choose the same cell.
+		**
+		**	Ask the movement code for its own passability test, so the two cannot disagree. Units
+		**	and buildings are ignored by this test and still rejected by Cell_Techno() below.
+		*/
+		if (!Map[center].Is_Clear_To_Move(Class->Speed, true, true, -1, Class->MZone)) return(0);
+
+		if (!Map[center].Cell_Techno()) {
+			return(Ore_Cell_Value(Map[center]));
 		}
 	}
 	return(0);
@@ -2592,71 +2687,97 @@ bool UnitClass::Goto_Tiberium(int rad)
 		if (Map[center].Land_Type() == LAND_TIBERIUM) {
 			return(true);
 		} else {
+			CELL claimed[MAX_CLAIMED_ORE_CELLS];
+			int claimedcount = Collect_Claimed_Ore_Cells(this, claimed, MAX_CLAIMED_ORE_CELLS);
 
 			/*
-			**	Perform a ring search outward from the center.
+			**	First pass avoids cells other harvesters are already heading to (issue #15). If
+			**	that leaves nothing, search again without the restriction rather than report no
+			**	ore: a harvester that finds none goes idle and flags its house as short of ore,
+			**	which a merely crowded field is not.
 			*/
-			for (int radius = 1; radius < rad; radius++) {
-				CELL cell = center;
-				CELL bestcell = 0;
-				int tiberium = 0;
-				int besttiberium = 0;
-				for (int x = -radius; x <= radius; x++) {
+			CELL bestcell = Find_Ore_Cell(center, rad, claimed, claimedcount);
+			if (!bestcell && claimedcount > 0) {
+				bestcell = Find_Ore_Cell(center, rad, NULL, 0);
+			}
 
-					/*
-					**	Randomize the corners.
-					*/
-					int corner[2];
-					int corners[4][2] = {
-						{x, -radius},
-						{x, +radius},
-						{-radius, x},
-						{+radius, x}
-					};
-					for (int i = 0; i < 3; i++) {
-						int j = i + rand() / (RAND_MAX / (4 - i) + 1);
-						memcpy(&corner, &corners[j], sizeof(corner));
-						memcpy(&corners[j], &corners[i], sizeof(corner));
-						memcpy(&corners[i], corner, sizeof(corner));
-					}
-
-					cell = center;
-					tiberium = Tiberium_Check(cell, corners[0][0], corners[0][1]);
-					if (tiberium > besttiberium) {
-						bestcell = cell;
-						besttiberium = tiberium;
-					}
-
-					cell = center;
-					tiberium = Tiberium_Check(cell, corners[1][0], corners[1][1]);
-					if (tiberium > besttiberium) {
-						bestcell = cell;
-						besttiberium = tiberium;
-					}
-
-					cell = center;
-					tiberium = Tiberium_Check(cell, corners[2][0], corners[2][1]);
-					if (tiberium > besttiberium) {
-						bestcell = cell;
-						besttiberium = tiberium;
-					}
-
-					cell = center;
-					tiberium = Tiberium_Check(cell, corners[3][0], corners[3][1]);
-					if (tiberium > besttiberium) {
-						bestcell = cell;
-						besttiberium = tiberium;
-					}
-				}
-				if (bestcell) {
-					Assign_Destination(::As_Target(bestcell));
-					return(false);
-				}
+			if (bestcell) {
+				Assign_Destination(::As_Target(bestcell));
+				return(false);
 			}
 		}
 	}
 
 	return(false);
+}
+
+
+/***********************************************************************************************
+ * UnitClass::Find_Ore_Cell -- Ring search for the ore cell this harvester should head to.     *
+ *                                                                                             *
+ *    Searches rings of increasing radius around the center cell. By default the nearest ring  *
+ *    holding any ore at all wins, with quantity only breaking ties inside that ring -- the    *
+ *    original behaviour. With HarvesterSmartOreScan enabled the whole radius is searched and  *
+ *    each candidate is scored by the ore in its neighbourhood, discounted by distance, so a   *
+ *    harvester no longer prefers a lone freshly-seeded cell beside an ore mine over a full    *
+ *    field a few cells further out (issue #15).                                               *
+ *                                                                                             *
+ * INPUT:   center   -- cell to search around.                                                 *
+ *          rad      -- search radius, in cells.                                               *
+ *          claimed  -- cells to skip because another harvester is heading there; may be NULL. *
+ *          count    -- number of entries in claimed.                                          *
+ *                                                                                             *
+ * OUTPUT:  Returns with the chosen cell, or 0 if no suitable ore was found.                   *
+ *                                                                                             *
+ * WARNINGS:   none                                                                            *
+ *=============================================================================================*/
+CELL UnitClass::Find_Ore_Cell(CELL center, int rad, CELL const * claimed, int count)
+{
+	bool smart = (Rule.HarvesterSmartOreScan != 0);
+	CELL bestcell = 0;
+	int bestscore = 0;
+
+	for (int radius = 1; radius < rad; radius++) {
+
+		/*
+		**	Original rule: stop at the first ring that held any ore.
+		*/
+		if (bestcell && !smart) break;
+
+		for (int x = -radius; x <= radius; x++) {
+
+			/*
+			**	Randomize the corners.
+			*/
+			int corner[2];
+			int corners[4][2] = {
+				{x, -radius},
+				{x, +radius},
+				{-radius, x},
+				{+radius, x}
+			};
+			for (int i = 0; i < 3; i++) {
+				int j = i + rand() / (RAND_MAX / (4 - i) + 1);
+				memcpy(&corner, &corners[j], sizeof(corner));
+				memcpy(&corners[j], &corners[i], sizeof(corner));
+				memcpy(&corners[i], corner, sizeof(corner));
+			}
+
+			for (int c = 0; c < 4; c++) {
+				CELL cell = center;
+				int value = Tiberium_Check(cell, corners[c][0], corners[c][1]);
+				if (value <= 0) continue;
+				if (Is_Claimed_Ore_Cell(cell, claimed, count)) continue;
+
+				int score = smart ? Smart_Ore_Score(cell, value, radius) : value;
+				if (score > bestscore) {
+					bestcell = cell;
+					bestscore = score;
+				}
+			}
+		}
+	}
+	return(bestcell);
 }
 
 
@@ -3342,7 +3463,12 @@ int UnitClass::Mission_Harvest(void)
 				if (Tiberium_Load() == 1) {
 					Status = FINDHOME;
 				} else {
-					if (!Goto_Tiberium(Rule.TiberiumShortScan / CELL_LEPTON_W) && !Target_Legal(NavCom))	{
+					/*
+					**	With the smart ore scan, re-search over the long radius: the distance discount keeps
+					**	the harvester local while worthwhile ore is nearby, and the wider view lets it leave an
+					**	ore mine and its trickle of freshly-seeded cells for a real field (issue #15).
+					*/
+					if (!Goto_Tiberium((Rule.HarvesterSmartOreScan ? Rule.TiberiumLongScan : Rule.TiberiumShortScan) / CELL_LEPTON_W) && !Target_Legal(NavCom))	{
 					  	ArchiveTarget = TARGET_NONE;
 						Status = FINDHOME;
 					} else {

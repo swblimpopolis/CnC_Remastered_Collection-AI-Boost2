@@ -164,6 +164,7 @@ class UnitClass :	public DriveClass
 		bool Flag_Attach(HousesType house);
 		bool Flag_Remove(void);
 		bool Goto_Tiberium(int radius);
+		CELL Find_Ore_Cell(CELL center, int rad, CELL const * claimed, int count);
 		bool Harvesting(void);
 		void APC_Close_Door(void);
 		void APC_Open_Door(void);

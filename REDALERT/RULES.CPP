@@ -699,6 +699,7 @@ bool RulesClass::General(CCINIClass & ini)
 		HarvesterQueueJumpingEnabled = ini.Get_Int(MOREQOL, "HarvesterQueueJumpingEnabled", 1);
 		HarvesterLoadBalancing = ini.Get_Int(MOREQOL, "HarvesterLoadBalancing", 0);
 		HarvesterOptimizeEnabled = ini.Get_Int(MOREQOL, "HarvesterOptimizeEnabled", 1);
+		HarvesterSmartOreScan = ini.Get_Int(MOREQOL, "HarvesterSmartOreScan", 0);
 		AttackMoveCommandAllowed = ini.Get_Int(MOREQOL, "AttackMoveCommandAllowed", 1);
 		ChronoTankAttackMoveCommandAllowed = ini.Get_Int(MOREQOL, "ChronoTankAttackMoveCommandAllowed", 1);
 		QmoveLoopsAllowed = ini.Get_Int(MOREQOL, "QmoveLoopsAllowed", 1);
