@@ -1084,6 +1084,19 @@ extern DynamicVectorClass<EgoClass *> whatever;
 */
 void GlyphX_Debug_Print(const char *debug_text);
 
+/*
+**	Logic-layer liveness diagnostics (AI-Boost issue #13). Reports an object that is being
+**	returned to its pool while the logic layer still holds a pointer to it -- the condition
+**	that produces a use-after-free in LogicClass::AI() on a later frame.
+*/
+void Logic_Report_Freed_While_Submitted(void * ptr, char const * what);
+
+/*
+**	Installs a first-chance handler that writes one full-memory minidump on a fatal
+**	exception, then lets the host's own crash reporter run as usual.
+*/
+void AIBoost_Install_Crash_Dumper(void);
+
 void Disable_Uncompressed_Shapes (void);
 void Enable_Uncompressed_Shapes (void);
 

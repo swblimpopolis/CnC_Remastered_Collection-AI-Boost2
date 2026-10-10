@@ -614,6 +614,120 @@ extern "C" __declspec(dllexport) unsigned int __cdecl CNC_Version(unsigned int v
 
 
 
+
+/**************************************************************************************************
+* AI-Boost full-memory crash dump capture.
+*
+* The host's crash reporter writes a minidump containing registers, stacks and this DLL's
+* globals -- but no game heap. That is exactly where the evidence lives for a use-after-free:
+* the freed object, the logic layer's vector, and the object pool free lists all read back as
+* unavailable. See AI-Boost issue #13.
+*
+* This installs a first-chance (vectored) handler that writes ONE full-memory dump on a fatal
+* exception and then returns EXCEPTION_CONTINUE_SEARCH, so the host's own reporter still runs
+* and the normal crash report is still produced unchanged.
+*
+* dbghelp.dll is resolved at fault time via GetProcAddress, so this adds no load-time
+* dependency to the DLL.
+*
+* Caveats: a full-memory dump is large (hundreds of MB), and because a vectored handler sees
+* first-chance exceptions, a fatal-looking exception that the host would have handled itself
+* would consume the one-shot. Both are acceptable for a diagnostic build.
+**************************************************************************************************/
+
+typedef BOOL (WINAPI * AIBoostMiniDumpWriteDumpType)(HANDLE, DWORD, HANDLE, DWORD, void *, void *, void *);
+
+static volatile LONG AIBoostDumpTaken = 0;
+
+static bool AIBoost_Is_Fatal_Exception(DWORD code)
+{
+	switch (code) {
+		case EXCEPTION_ACCESS_VIOLATION:
+		case EXCEPTION_ARRAY_BOUNDS_EXCEEDED:
+		case EXCEPTION_ILLEGAL_INSTRUCTION:
+		case EXCEPTION_PRIV_INSTRUCTION:
+		case EXCEPTION_INT_DIVIDE_BY_ZERO:
+		case EXCEPTION_STACK_OVERFLOW:
+			return(true);
+	}
+	return(false);
+}
+
+static LONG CALLBACK AIBoost_Vectored_Handler(EXCEPTION_POINTERS * info)
+{
+	if (info == NULL || info->ExceptionRecord == NULL) return(EXCEPTION_CONTINUE_SEARCH);
+	if (!AIBoost_Is_Fatal_Exception(info->ExceptionRecord->ExceptionCode)) return(EXCEPTION_CONTINUE_SEARCH);
+
+	/*
+	**	Only ever write one dump. A fatal fault can be re-raised while unwinding, and these
+	**	files are large.
+	*/
+	if (InterlockedCompareExchange(&AIBoostDumpTaken, 1, 0) != 0) return(EXCEPTION_CONTINUE_SEARCH);
+
+	HMODULE dbghelp = LoadLibraryA("dbghelp.dll");
+	if (dbghelp != NULL) {
+		AIBoostMiniDumpWriteDumpType writedump =
+			(AIBoostMiniDumpWriteDumpType)GetProcAddress(dbghelp, "MiniDumpWriteDump");
+
+		if (writedump != NULL) {
+			char dir[MAX_PATH];
+			char path[MAX_PATH];
+
+			if (GetTempPathA(sizeof(dir), dir) == 0) {
+				strcpy(dir, ".\\");
+			}
+			sprintf(path, "%sAIBoost_FullDump_%u_%u.dmp", dir,
+				(unsigned)GetCurrentProcessId(), (unsigned)GetTickCount());
+
+			HANDLE file = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+				FILE_ATTRIBUTE_NORMAL, NULL);
+
+			if (file != INVALID_HANDLE_VALUE) {
+				/*
+				**	Matches MINIDUMP_EXCEPTION_INFORMATION; declared locally so this file does
+				**	not need to include dbghelp.h.
+				*/
+				struct {
+					DWORD                ThreadId;
+					EXCEPTION_POINTERS * ExceptionPointers;
+					BOOL                 ClientPointers;
+				} param;
+
+				param.ThreadId = GetCurrentThreadId();
+				param.ExceptionPointers = info;
+				param.ClientPointers = FALSE;
+
+				/*
+				**	MiniDumpWithFullMemory (0x2) | MiniDumpWithHandleData (0x4)
+				**	| MiniDumpWithProcessThreadData (0x100).
+				*/
+				writedump(GetCurrentProcess(), GetCurrentProcessId(), file,
+					0x2 | 0x4 | 0x100, &param, NULL, NULL);
+
+				CloseHandle(file);
+
+				GlyphX_Debug_Print("AI-Boost: wrote full-memory crash dump:");
+				GlyphX_Debug_Print(path);
+			}
+		}
+	}
+
+	/*
+	**	Let the host's crash reporter handle this exception exactly as it normally would.
+	*/
+	return(EXCEPTION_CONTINUE_SEARCH);
+}
+
+void AIBoost_Install_Crash_Dumper(void)
+{
+	static bool installed = false;
+
+	if (installed) return;
+	installed = true;
+
+	AddVectoredExceptionHandler(1, AIBoost_Vectored_Handler);
+}
+
 /**************************************************************************************************
 * CNC_Init -- Initialize the .DLL
 *
@@ -628,10 +742,19 @@ extern "C" __declspec(dllexport) unsigned int __cdecl CNC_Version(unsigned int v
 extern "C" __declspec(dllexport) void __cdecl CNC_Init(const char *command_line, CNC_Event_Callback_Type event_callback)
 {
 	DLLExportClass::Set_Content_Directory(NULL);
+
+	AIBoost_Install_Crash_Dumper();
 		  
 	DLL_Startup(command_line);
 
 	DLLExportClass::Set_Event_Callback( event_callback );
+
+	/*
+	**	The crash dumper is installed before DLL_Startup so that it covers faults during
+	**	startup (rules loading has crashed before). Debug output only reaches the log once
+	**	the event callback is set, so the confirmation is emitted here instead.
+	*/
+	GlyphX_Debug_Print("AI-Boost: full-memory crash dumper installed");
 
 	DLLExportClass::Init();
 }

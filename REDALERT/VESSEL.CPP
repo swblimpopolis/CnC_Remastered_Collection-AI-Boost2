@@ -221,6 +221,11 @@ void VesselClass::operator delete(void * ptr)
 		assert(((VesselClass *)ptr)->IsActive);
 		((VesselClass *)ptr)->IsActive = false;
 	}
+	/*
+	**	Last moment before the slot returns to its pool: if the logic layer still holds
+	**	this pointer, ObjectClass::Limbo never removed it (AI-Boost issue #13).
+	*/
+	Logic_Report_Freed_While_Submitted(ptr, "VesselClass");
 	Vessels.Free((VesselClass *)ptr);
 }
 
