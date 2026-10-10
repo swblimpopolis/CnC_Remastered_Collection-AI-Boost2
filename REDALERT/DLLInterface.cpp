@@ -726,7 +726,6 @@ void AIBoost_Install_Crash_Dumper(void)
 	installed = true;
 
 	AddVectoredExceptionHandler(1, AIBoost_Vectored_Handler);
-	GlyphX_Debug_Print("AI-Boost: full-memory crash dumper installed");
 }
 
 /**************************************************************************************************
@@ -749,6 +748,13 @@ extern "C" __declspec(dllexport) void __cdecl CNC_Init(const char *command_line,
 	DLL_Startup(command_line);
 
 	DLLExportClass::Set_Event_Callback( event_callback );
+
+	/*
+	**	The crash dumper is installed before DLL_Startup so that it covers faults during
+	**	startup (rules loading has crashed before). Debug output only reaches the log once
+	**	the event callback is set, so the confirmation is emitted here instead.
+	*/
+	GlyphX_Debug_Print("AI-Boost: full-memory crash dumper installed");
 
 	DLLExportClass::Init();
 }
