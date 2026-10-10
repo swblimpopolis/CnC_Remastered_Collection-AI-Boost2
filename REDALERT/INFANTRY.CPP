@@ -297,6 +297,11 @@ void InfantryClass::operator delete(void * ptr)
 	if (ptr != NULL) {
 		((InfantryClass *)ptr)->IsActive = false;
 	}
+	/*
+	**	Last moment before the slot returns to its pool: if the logic layer still holds
+	**	this pointer, ObjectClass::Limbo never removed it (AI-Boost issue #13).
+	*/
+	Logic_Report_Freed_While_Submitted(ptr, "InfantryClass");
 	Infantry.Free((InfantryClass *)ptr);
 }
 

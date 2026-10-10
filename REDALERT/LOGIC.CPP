@@ -321,6 +321,24 @@ void LogicClass::AI(void)
 		ObjectClass * obj = (*this)[index];
 		int count = Count();
 
+		/*
+		**	A freed object can still be referenced by this layer (issue #13): ObjectClass::Limbo
+		**	only removes it when Class_Of().IsSentient reads true, so a corrupt type pointer at
+		**	teardown leaves a dangling entry behind. Calling AI() on a dead slot then dispatches
+		**	through a stale vtable -- the Mission_Guard_Area access violation.
+		**
+		**	Pool slots are never unmapped and every operator delete clears IsActive, so this test
+		**	is safe to perform on an already-freed object and uses the engine's own liveness flag.
+		**	The timequake code below already guards this way. Drop the entry rather than merely
+		**	skipping it, so a permanently stale pointer cannot re-log on every frame.
+		*/
+		if (obj == NULL || !obj->IsActive) {
+			GlyphX_Debug_Print("LogicClass::AI -- dead object in logic layer; removing stale entry");
+			Delete(index);
+			index--;
+			continue;
+		}
+
 		BStart(BENCH_AI);
 		obj->AI();
 		BEnd(BENCH_AI);
@@ -507,5 +525,36 @@ void LogicClass::Clear_Recently_Created_Bits(void)
 	for (int index = 0; index < Count(); index++) {
 		ObjectClass * obj = (*this)[index];
 		obj->IsRecentlyCreated = false;
+	}
+}
+
+/***********************************************************************************************
+ * Logic_Report_Freed_While_Submitted -- Flags an object freed while still in the logic layer.  *
+ *                                                                                             *
+ *    Called from each sentient class's operator delete, at the last moment before the slot     *
+ *    returns to its pool. If the logic layer still holds this pointer then ObjectClass::Limbo  *
+ *    never removed it, and LogicClass::AI() would dereference the dead slot on a later frame.  *
+ *    Reporting it here names the condition where it is created rather than one frame later,    *
+ *    by which point the evidence is gone.                                                     *
+ *                                                                                             *
+ *    Only pointer values are compared, so this is safe to call on a destructed object.         *
+ *                                                                                             *
+ * INPUT:   ptr   -- the block being returned to its pool.                                      *
+ *          what  -- class name, for the log line.                                              *
+ *                                                                                             *
+ * OUTPUT:  none                                                                                *
+ *                                                                                             *
+ * WARNINGS:   none                                                                             *
+ *=============================================================================================*/
+void Logic_Report_Freed_While_Submitted(void * ptr, char const * what)
+{
+	if (ptr == NULL) return;
+
+	int index = Logic.ID((ObjectClass *)ptr);
+	if (index != -1) {
+		char buffer[160];
+		sprintf(buffer, "LEAK: %s freed while still submitted to the logic layer (index %d of %d)",
+			what, index, Logic.Count());
+		GlyphX_Debug_Print(buffer);
 	}
 }
