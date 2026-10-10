@@ -2511,11 +2511,11 @@ void UnitClass::Draw_It(int x, int y, WindowNumberType window) const
 static int const MAX_CLAIMED_ORE_CELLS = 64;
 
 /*
-**	Smart ore scan: how strongly distance discounts a patch. A patch found at ring radius R is
-**	scored patch * W / (R + W). With W = 4 a patch keeps 80% of its value at radius 1, 50% at
-**	radius 4 and 25% at radius 12.
+**	Smart ore scan: an ore mine only ever germinates new ore in the eight cells around itself,
+**	and always at the lowest level. Those cells are skipped until they have grown to at least
+**	this level, so that harvesters stop crawling a mine one bail at a time.
 */
-static int const SMART_ORE_DISTANCE_WEIGHT = 4;
+static int const MINE_SEED_MIN_LEVEL = 5;
 
 
 /*
@@ -2583,22 +2583,25 @@ static bool Is_Claimed_Ore_Cell(CELL cell, CELL const * list, int count)
 
 
 /*
-**	Smart ore scan score for a candidate cell: the ore in the cell plus its eight neighbours,
-**	discounted by distance. Counting the neighbourhood is what separates a real patch from a
-**	lone freshly-seeded cell beside an ore mine, which would otherwise look exactly as good as
-**	the edge of a full field.
+**	Is this cell young ore beside an ore mine -- below MINE_SEED_MIN_LEVEL and adjacent to the
+**	mine itself? The stock search takes the nearest ore, so whenever a harvester empties a cell
+**	next to a mine and the mine re-seeds a neighbour, that one-bail cell wins the next search over
+**	a full field a few cells further out. Identifying the mine directly, rather than judging cells
+**	by how much ore surrounds them, leaves ordinary fields to the stock nearest-first rule, which
+**	clears ground in solid blocks.
 */
-static int Smart_Ore_Score(CELL cell, int value, int radius)
+static bool Is_Young_Mine_Ore(CELL cell)
 {
-	int patch = value;
+	if (Map[cell].OverlayData >= MINE_SEED_MIN_LEVEL) return(false);
 
 	for (FacingType face = FACING_N; face < FACING_COUNT; face++) {
 		CellClass const * adjacent = Map[cell].Adjacent_Cell(face);
 		if (adjacent != NULL) {
-			patch += Ore_Cell_Value(*adjacent);
+			TerrainClass * terrain = adjacent->Cell_Terrain();
+			if (terrain != NULL && *terrain == TERRAIN_MINE) return(true);
 		}
 	}
-	return((patch * SMART_ORE_DISTANCE_WEIGHT) / (radius + SMART_ORE_DISTANCE_WEIGHT));
+	return(false);
 }
 
 
@@ -2689,16 +2692,17 @@ bool UnitClass::Goto_Tiberium(int rad)
 		} else {
 			CELL claimed[MAX_CLAIMED_ORE_CELLS];
 			int claimedcount = Collect_Claimed_Ore_Cells(this, claimed, MAX_CLAIMED_ORE_CELLS);
+			bool skipseeds = (Rule.HarvesterSmartOreScan != 0);
 
 			/*
-			**	First pass avoids cells other harvesters are already heading to (issue #15). If
-			**	that leaves nothing, search again without the restriction rather than report no
-			**	ore: a harvester that finds none goes idle and flags its house as short of ore,
-			**	which a merely crowded field is not.
+			**	First pass avoids cells other harvesters are already heading to and, with the smart
+			**	ore scan, young ore beside a mine (issue #15). If that leaves nothing, search again
+			**	without either restriction rather than report no ore: a harvester that finds none
+			**	goes idle and flags its house as short of ore, which a crowded field is not.
 			*/
-			CELL bestcell = Find_Ore_Cell(center, rad, claimed, claimedcount);
-			if (!bestcell && claimedcount > 0) {
-				bestcell = Find_Ore_Cell(center, rad, NULL, 0);
+			CELL bestcell = Find_Ore_Cell(center, rad, claimed, claimedcount, skipseeds);
+			if (!bestcell && (claimedcount > 0 || skipseeds)) {
+				bestcell = Find_Ore_Cell(center, rad, NULL, 0, false);
 			}
 
 			if (bestcell) {
@@ -2715,35 +2719,27 @@ bool UnitClass::Goto_Tiberium(int rad)
 /***********************************************************************************************
  * UnitClass::Find_Ore_Cell -- Ring search for the ore cell this harvester should head to.     *
  *                                                                                             *
- *    Searches rings of increasing radius around the center cell. By default the nearest ring  *
- *    holding any ore at all wins, with quantity only breaking ties inside that ring -- the    *
- *    original behaviour. With HarvesterSmartOreScan enabled the whole radius is searched and  *
- *    each candidate is scored by the ore in its neighbourhood, discounted by distance, so a   *
- *    harvester no longer prefers a lone freshly-seeded cell beside an ore mine over a full    *
- *    field a few cells further out (issue #15).                                               *
+ *    Searches rings of increasing radius around the center cell. The nearest ring holding any *
+ *    acceptable ore wins, with quantity breaking ties inside that ring -- the original rule,  *
+ *    which clears a field in solid blocks.                                                    *
  *                                                                                             *
- * INPUT:   center   -- cell to search around.                                                 *
- *          rad      -- search radius, in cells.                                               *
- *          claimed  -- cells to skip because another harvester is heading there; may be NULL. *
- *          count    -- number of entries in claimed.                                          *
+ * INPUT:   center      -- cell to search around.                                              *
+ *          rad         -- search radius, in cells.                                            *
+ *          claimed     -- cells to skip because another harvester is heading there; may be    *
+ *                         NULL.                                                               *
+ *          count       -- number of entries in claimed.                                       *
+ *          skipseeds   -- also skip young ore beside an ore mine (smart ore scan).            *
  *                                                                                             *
- * OUTPUT:  Returns with the chosen cell, or 0 if no suitable ore was found.                   *
+ * OUTPUT:  Returns with the chosen cell, or 0 if no acceptable ore was found.                 *
  *                                                                                             *
  * WARNINGS:   none                                                                            *
  *=============================================================================================*/
-CELL UnitClass::Find_Ore_Cell(CELL center, int rad, CELL const * claimed, int count)
+CELL UnitClass::Find_Ore_Cell(CELL center, int rad, CELL const * claimed, int count, bool skipseeds)
 {
-	bool smart = (Rule.HarvesterSmartOreScan != 0);
 	CELL bestcell = 0;
-	int bestscore = 0;
+	int besttiberium = 0;
 
 	for (int radius = 1; radius < rad; radius++) {
-
-		/*
-		**	Original rule: stop at the first ring that held any ore.
-		*/
-		if (bestcell && !smart) break;
-
 		for (int x = -radius; x <= radius; x++) {
 
 			/*
@@ -2765,17 +2761,22 @@ CELL UnitClass::Find_Ore_Cell(CELL center, int rad, CELL const * claimed, int co
 
 			for (int c = 0; c < 4; c++) {
 				CELL cell = center;
-				int value = Tiberium_Check(cell, corners[c][0], corners[c][1]);
-				if (value <= 0) continue;
+				int tiberium = Tiberium_Check(cell, corners[c][0], corners[c][1]);
+				if (tiberium <= 0) continue;
 				if (Is_Claimed_Ore_Cell(cell, claimed, count)) continue;
+				if (skipseeds && Is_Young_Mine_Ore(cell)) continue;
 
-				int score = smart ? Smart_Ore_Score(cell, value, radius) : value;
-				if (score > bestscore) {
+				if (tiberium > besttiberium) {
 					bestcell = cell;
-					bestscore = score;
+					besttiberium = tiberium;
 				}
 			}
 		}
+
+		/*
+		**	The nearest ring holding acceptable ore wins.
+		*/
+		if (bestcell) break;
 	}
 	return(bestcell);
 }
@@ -3464,9 +3465,10 @@ int UnitClass::Mission_Harvest(void)
 					Status = FINDHOME;
 				} else {
 					/*
-					**	With the smart ore scan, re-search over the long radius: the distance discount keeps
-					**	the harvester local while worthwhile ore is nearby, and the wider view lets it leave an
-					**	ore mine and its trickle of freshly-seeded cells for a real field (issue #15).
+					**	With the smart ore scan, re-search over the long radius. The search still takes the
+					**	nearest acceptable ore, so the wider view only matters once nearby ore is gone, and it
+					**	lets a harvester move on from a mine to a real field rather than going home part-loaded
+					**	(issue #15).
 					*/
 					if (!Goto_Tiberium((Rule.HarvesterSmartOreScan ? Rule.TiberiumLongScan : Rule.TiberiumShortScan) / CELL_LEPTON_W) && !Target_Legal(NavCom))	{
 					  	ArchiveTarget = TARGET_NONE;
